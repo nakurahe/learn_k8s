@@ -1,0 +1,17 @@
+{
+  "command": "scale-workers",
+  "git_sha": "bb8897b",
+  "started_at_epoch": 1768154355,
+  "ended_at_epoch": 1768154374,
+  "duration_s": 19,
+  "settings": {
+    "api_url": "http://localhost:8080",
+    "n": 300,
+    "p": 80,
+    "scaled_workers": 3,
+    "prefix": "scale-1768154355-"
+  },
+  "results": {
+    "workers": [ {"container_id":"0c94c20c9a16ebfafc4082d1e457d8fd860b2ab5c2880838a9335e92ed52c36d","processed":102} ,{"container_id":"a85391fdfcc65cfdde4645277b1e17bf0bda5cc0970afe8c70355a251c404a16","processed":98} ,{"container_id":"5a61f1b48f6170cf25d81e01b1e057469b402b50bdb91305c98f1afae2ce666a","processed":100} ]
+  }
+}

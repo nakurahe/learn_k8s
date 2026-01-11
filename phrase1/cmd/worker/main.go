@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,18 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func ensureParentDir(path string) error {
@@ -45,6 +58,7 @@ func main() {
 	redisAddr := env("REDIS_ADDR", "redis:6379")
 	queueName := env("QUEUE_NAME", "messages")
 	outputPath := env("OUTPUT_PATH", "/data/processed.log")
+	processingDelay := time.Duration(envInt("PROCESSING_DELAY_MS", 0)) * time.Millisecond
 
 	logger := log.New(os.Stdout, "worker ", log.LstdFlags|log.Lmicroseconds)
 
@@ -61,7 +75,7 @@ func main() {
 		cancel()
 	}()
 
-	logger.Printf("starting (redis=%s queue=%s output=%s)", redisAddr, queueName, outputPath)
+	logger.Printf("starting (redis=%s queue=%s output=%s delay=%s)", redisAddr, queueName, outputPath, processingDelay)
 
 	for {
 		msg, err := q.Dequeue(ctx)
@@ -72,6 +86,11 @@ func main() {
 			logger.Printf("dequeue error: %v", err)
 			time.Sleep(1 * time.Second)
 			continue
+		}
+
+		logger.Printf("dequeued message: %q", msg)
+		if processingDelay > 0 {
+			time.Sleep(processingDelay)
 		}
 
 		processed := fmt.Sprintf("%s | %s", time.Now().Format(time.RFC3339Nano), msg)

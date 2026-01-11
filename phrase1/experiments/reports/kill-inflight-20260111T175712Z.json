@@ -1,0 +1,22 @@
+{
+  "command": "kill-inflight",
+  "git_sha": "bb8897b",
+  "started_at_epoch": 1768154209,
+  "ended_at_epoch": 1768154232,
+  "duration_s": 23,
+  "settings": {
+    "api_url": "http://localhost:8080",
+    "queue_name": "messages",
+    "processing_delay_ms": 300,
+    "n": 20,
+    "p": 10,
+    "kill_after": 3,
+    "prefix": "kill-1768154209-"
+  },
+  "results": {
+    "enqueued": 20,
+    "processed": 12,
+    "in_redis": 6,
+    "lost_est": 2
+  }
+}

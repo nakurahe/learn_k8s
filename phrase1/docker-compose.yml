@@ -35,6 +35,7 @@ services:
       REDIS_ADDR: redis:6379
       QUEUE_NAME: messages
       OUTPUT_PATH: /data/processed.log
+      PROCESSING_DELAY_MS: ${PROCESSING_DELAY_MS:-0}
     volumes:
       - worker-data:/data
     depends_on:

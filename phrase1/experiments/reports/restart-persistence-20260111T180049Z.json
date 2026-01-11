@@ -1,0 +1,16 @@
+{
+  "command": "restart-persistence",
+  "git_sha": "bb8897b",
+  "started_at_epoch": 1768154433,
+  "ended_at_epoch": 1768154449,
+  "duration_s": 16,
+  "settings": {
+    "api_url": "http://localhost:8080",
+    "queue_name": "messages",
+    "prefix": "persist-1768154433-"
+  },
+  "results": {
+    "processed_with_prefix": 20,
+    "redis_llen": 0
+  }
+}

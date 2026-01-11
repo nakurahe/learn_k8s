@@ -1,0 +1,16 @@
+{
+  "command": "slam-api",
+  "git_sha": "bb8897b",
+  "started_at_epoch": 1768154413,
+  "ended_at_epoch": 1768154415,
+  "duration_s": 2,
+  "settings": {
+    "api_url": "http://localhost:8080",
+    "n": 1000,
+    "p": 100,
+    "prefix": "load-1768154413-"
+  },
+  "results": {
+    "status_codes": { "200": 1000 }
+  }
+}

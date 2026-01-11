@@ -7,6 +7,29 @@ Components:
 - **redis**: Redis used as a simple message queue (Redis List)
 - **worker**: background consumer that pulls from Redis and processes messages
 
+## Learning note: Running this across multiple machines
+
+This repo is intentionally “single-machine friendly” (Compose network, one Redis, local volumes). If we wanted this to run reliably across multiple machines, these are the answers to the common ops questions:
+
+- **What would we need to run this reliably across multiple machines?**
+  - A real orchestrator (Kubernetes/Nomad/Swarm) for scheduling, health checks, rescheduling on node failure, and safe rollouts.
+  - Service discovery + networking so `api`/`worker` can find Redis and the API can be reached consistently.
+  - Highly available state: Redis HA (sentinel/cluster or a managed Redis) plus backups.
+  - Durable output handling: replace the local `worker-data` file sink with shared storage (object store/DB) or a log pipeline.
+  - Centralized config/secrets and observability (logs/metrics) so failures are visible and automation can react.
+
+- **How would we automatically restart a crashed worker?**
+  - In Kubernetes: run `worker` as a Deployment/ReplicaSet with `restartPolicy: Always` and a liveness probe; it will restart/reschedule automatically.
+  - In Docker/Compose: add a restart policy (e.g. `restart: unless-stopped`) or run the worker under `systemd` with `Restart=always`.
+
+- **How would we update the API to a new version without downtime?**
+  - Run multiple API replicas behind a load balancer and do a rolling update (new instances become ready before old ones are drained).
+  - Use readiness checks (don’t receive traffic until Redis is reachable) and graceful shutdown to finish in-flight requests.
+
+- **How would external traffic find our API if it's running on 3 different servers?**
+  - Put a stable “front door” in place: DNS name or one L4/L7 load balancer/ingress, routing to healthy API instances.
+  - DNS round-robin alone can work for demos, but typically lacks health-based routing and smooth draining during deploys.
+
 ## Architecture diagram
 
 ```text
@@ -133,6 +156,7 @@ Worker:
 - `REDIS_ADDR` (default `redis:6379` in compose)
 - `QUEUE_NAME` (default `messages`)
 - `OUTPUT_PATH` (default `/data/processed.log`)
+- `PROCESSING_DELAY_MS` (default `0`) simulate slow work
 
 ## Source layout
 
@@ -142,22 +166,152 @@ Worker:
 - `docker-compose.yml`: runs `api`, `redis`, and `worker`
 - `Dockerfile.api`, `Dockerfile.worker`: container builds
 
-## Learning note: What breaks across multiple machines?
+## Experiments
 
-Docker Compose works great on one machine because everything shares:
-- one network namespace per compose network
-- one Redis instance reachable as `redis:6379`
-- local volumes for persistence
+Important: run these commands from this folder:
 
-If we needed to run this across 10 machines, these are the main things that would break or become manual toil:
+```bash
+cd phrase1
+```
 
-- **Service discovery / networking:** `redis:6379` only exists inside a single Compose network. Across machines, we need a stable way for API and workers to find Redis (DNS/service discovery, routing rules, firewall openings).
-- **Load balancing:** multiple API instances need a single entrypoint (L4/L7 load balancer) and health-based routing.
-- **Shared state & storage:** the worker writes to a local volume (`worker-data`). Across machines, “the file” is no longer shared. We’d need shared storage (NFS/S3/etc.) or change the worker to write to a database/object store.
-- **Queue topology:** a single Redis instance becomes a bottleneck and single point of failure; we may need Redis HA (replication/sentinel/cluster) and proper persistence/backup.
-- **Rolling updates & self-healing:** Compose doesn’t orchestrate across nodes. If a machine dies, we want workloads rescheduled automatically and updated gradually without downtime.
-- **Configuration management:** env vars are easy locally, but at scale we need consistent distribution (and separation of config vs secrets).
-- **Security boundaries:** exposing ports across machines increases blast radius. We need network policies, TLS, auth, and least-privilege runtime settings.
-- **Observability:** distributed logs/metrics/traces become necessary; “docker compose logs” stops being enough.
+### Automated runner
 
-This is exactly the kind of gap Kubernetes is designed to fill: service discovery, scheduling, scaling, self-healing, rolling updates, and standardized config/secret management.
+A simple script to run each experiment and collect results:
+
+```bash
+chmod +x experiments/run.sh
+./experiments/run.sh help
+```
+
+Examples:
+
+```bash
+PROCESSING_DELAY_MS=800 ./experiments/run.sh kill-inflight
+./experiments/run.sh scale-workers
+./experiments/run.sh slam-api
+./experiments/run.sh restart-persistence
+./experiments/run.sh clean
+```
+
+Each run writes a JSON report to `experiments/reports/` (override with `REPORT_DIR=...`).
+
+#### 1) Kill the worker mid-processing (in-flight loss)
+
+Goal: see what happens when the worker is terminated after it dequeues but before it finishes “processing”.
+
+Manual steps:
+
+1) Start the stack and slow down processing:
+
+```bash
+docker compose up -d --build
+docker compose stop worker
+PROCESSING_DELAY_MS=500 docker compose up -d --build worker
+```
+
+2) In another terminal, follow worker logs:
+
+```bash
+docker compose logs -f worker
+```
+
+3) Enqueue a batch quickly:
+
+```bash
+seq 1 200 | xargs -I{} -P 50 curl -sS -o /dev/null -X POST http://localhost:8080/enqueue -d "kill-test-{}"
+```
+
+4) While logs show lines like `dequeued message: ...` (but before `processed message: ...`), kill the worker abruptly:
+
+```bash
+docker compose kill -s SIGKILL worker
+docker compose up -d worker
+```
+
+Expected result:
+- Messages that were *still in Redis* will be processed after restart.
+- Messages that were *already dequeued* (popped) but not yet written are typically **lost**.
+
+Why: the worker uses Redis `BRPOP` which removes the item when dequeued.
+
+#### 2) Scale to 3 workers (competing consumers)
+
+Goal: see how multiple workers share the queue.
+
+Manual steps:
+
+1) Scale workers:
+
+```bash
+docker compose up -d --scale worker=3 --build
+```
+
+2) Enqueue a batch:
+
+```bash
+seq 1 300 | xargs -I{} -P 80 curl -sS -o /dev/null -X POST http://localhost:8080/enqueue -d "scale-worker-{}"
+```
+
+3) Watch logs and confirm multiple containers are processing:
+
+```bash
+docker compose logs -f worker
+```
+
+Notes / gotchas:
+- All workers do `BRPOP` on the same list, so they naturally load-balance (each message goes to one worker).
+- All workers share the same `worker-data` volume, so they append into the same `/data/processed.log`.
+
+#### 3) Slam the API (1000 fast requests)
+
+Goal: see if the API or Redis falls over under bursty client load.
+
+Run a simple concurrent load burst and summarize status codes mannually:
+
+```bash
+seq 1 1000 | xargs -I{} -P 100 curl -sS -o /dev/null -w "%{http_code}\n" \
+  -X POST http://localhost:8080/enqueue -d "load-{}" | sort | uniq -c
+```
+
+Expected result:
+- Mostly (or all) `200`.
+- If you see `503`, that usually means the API couldn’t talk to Redis within its timeout.
+
+Can you scale the API with `--scale api=3`?
+- Not directly with the current Compose file because `api` publishes a fixed host port (`8080:8080`).
+- To scale it properly, add a reverse proxy/LB service (nginx/traefik) that owns port 8080 and load-balances to multiple `api` containers.
+
+#### 4) Restart everything (persistence)
+
+Goal: see what data persists across restarts.
+
+Manual steps:
+
+1) Enqueue a few messages:
+
+```bash
+seq 1 20 | xargs -I{} -P 10 curl -sS -o /dev/null -X POST http://localhost:8080/enqueue -d "persist-{}"
+```
+
+2) Restart:
+
+```bash
+docker compose restart
+```
+
+3) Check processed output:
+
+```bash
+docker compose exec worker tail -n 50 /data/processed.log
+```
+
+4) (Optional) check queue depth:
+
+```bash
+docker compose exec redis redis-cli LLEN messages
+```
+
+Expected result:
+- `worker-data` volume keeps `/data/processed.log` across restarts.
+- `redis-data` volume keeps Redis state (AOF enabled). 
+- In-flight messages can still be lost if a worker dies after dequeue and before processing completes.
