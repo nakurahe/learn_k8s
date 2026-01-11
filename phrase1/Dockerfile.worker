@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/worker ./cmd/worker
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates su-exec \
+	&& addgroup -S app \
+	&& adduser -S -G app app
+WORKDIR /
+COPY --from=build /out/worker /worker
+COPY entrypoint.worker.sh /entrypoint.worker.sh
+RUN chmod +x /entrypoint.worker.sh
+ENTRYPOINT ["/entrypoint.worker.sh"]
